@@ -1,0 +1,3 @@
+[submodule "commons"]
+	path = commons
+	url = https://github.com/forger-ai/vite-fastapi-sqlite-commons.git
