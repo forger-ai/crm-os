@@ -33,6 +33,12 @@ def _activity_read(activity: Activity) -> ActivityRead:
         contact_id=activity.contact_id,
         organization_id=activity.organization_id,
         owner=activity.owner,
+        external_provider=activity.external_provider,
+        external_message_id=activity.external_message_id,
+        external_thread_id=activity.external_thread_id,
+        from_email=activity.from_email,
+        to_email=activity.to_email,
+        pending_send=activity.pending_send,
         created_at=activity.created_at,
         updated_at=activity.updated_at,
     )
