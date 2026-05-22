@@ -357,3 +357,54 @@ export interface LeadScoreReport {
   hot: LeadScoreEntry[];
   cold: LeadScoreEntry[];
 }
+
+// ── Lead intake (Gmail polling) ─────────────────────────────────────────────
+
+export type IntakeMode = "review" | "auto";
+export type IncomingLeadStatus = "pending" | "accepted" | "dismissed";
+
+export interface IntakeConfig {
+  enabled: boolean;
+  mode: IntakeMode;
+  poll_interval_minutes: number;
+  last_polled_at: string | null;
+  since_iso: string;
+  pending_count: number;
+}
+
+export interface IntakeConfigUpdate {
+  enabled?: boolean;
+  mode?: IntakeMode;
+  poll_interval_minutes?: number;
+}
+
+export interface IncomingLead {
+  id: string;
+  external_provider: string;
+  external_message_id: string;
+  external_thread_id: string | null;
+  from_email: string | null;
+  from_name: string | null;
+  subject: string | null;
+  body: string | null;
+  received_at: string | null;
+  confidence: number;
+  reason: string | null;
+  suggested_first_name: string | null;
+  suggested_last_name: string | null;
+  suggested_org_name: string | null;
+  suggested_phone: string | null;
+  status: IncomingLeadStatus;
+  created_contact_id: string | null;
+  created_deal_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface LeadAcceptPayload {
+  first_name?: string | null;
+  last_name?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  organization_name?: string | null;
+}

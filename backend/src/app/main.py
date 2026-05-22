@@ -14,6 +14,7 @@ from app.routers import (
     deals,
     field_values,
     imports,
+    intake,
     lead_scoring,
     notes,
     organizations,
@@ -29,7 +30,7 @@ from app.routers import (
 def create_app() -> FastAPI:
     app = FastAPI(
         title="CRM OS API",
-        version="0.1.0",
+        version="0.2.0",
         docs_url="/api/docs",
         redoc_url="/api/redoc",
         openapi_url="/api/openapi.json",
@@ -67,6 +68,7 @@ def create_app() -> FastAPI:
     app.include_router(products.router)
     app.include_router(quotes.router)
     app.include_router(lead_scoring.router)
+    app.include_router(intake.router)
     return app
 
 

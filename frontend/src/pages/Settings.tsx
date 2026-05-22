@@ -1,16 +1,21 @@
 import { useEffect, useMemo, useState } from "react";
 import {
+  Alert,
   Box,
   Button,
   Chip,
+  CircularProgress,
   Dialog,
   DialogActions,
   DialogContent,
   DialogTitle,
+  Divider,
+  FormControlLabel,
   IconButton,
   MenuItem,
   Paper,
   Stack,
+  Switch,
   Tab,
   Table,
   TableBody,
@@ -23,11 +28,21 @@ import {
 } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
 import DeleteIcon from "@mui/icons-material/DeleteOutline";
+import { API_BASE_URL } from "../api/client";
+import { isForgerDesktop, runScanGmailForLeads } from "../api/codex";
+import { listContacts } from "../api/contacts";
 import {
   createCustomField,
   deleteCustomField,
   listCustomFields,
 } from "../api/customFields";
+import {
+  acceptIncomingLead,
+  dismissIncomingLead,
+  getIntakeConfig,
+  listIncomingLeads,
+  updateIntakeConfig,
+} from "../api/intake";
 import {
   createPipeline,
   createStage,
@@ -43,6 +58,9 @@ import type {
   CustomFieldType,
   EmailSyncStatus,
   ImportRunRead,
+  IncomingLead,
+  IntakeConfig,
+  IntakeMode,
   PipelineRead,
 } from "../api/types";
 import CsvImporter from "../components/CsvImporter";
@@ -53,7 +71,8 @@ type SettingsTab =
   | "custom_fields"
   | "import"
   | "history"
-  | "connections";
+  | "connections"
+  | "leads";
 
 export default function Settings() {
   const [tab, setTab] = useState<SettingsTab>("pipelines");
@@ -62,6 +81,18 @@ export default function Settings() {
   const [imports, setImports] = useState<ImportRunRead[]>([]);
   const [emailSync, setEmailSync] = useState<EmailSyncStatus | null>(null);
   const [emailSyncLoading, setEmailSyncLoading] = useState(false);
+
+  // Lead intake (Gmail polling) state
+  const [intakeConfig, setIntakeConfig] = useState<IntakeConfig | null>(null);
+  const [intakeLeads, setIntakeLeads] = useState<IncomingLead[]>([]);
+  const [intakeLoading, setIntakeLoading] = useState(false);
+  const [scanning, setScanning] = useState(false);
+  const [acceptLead, setAcceptLead] = useState<IncomingLead | null>(null);
+  const [acceptFirst, setAcceptFirst] = useState("");
+  const [acceptLast, setAcceptLast] = useState("");
+  const [acceptEmail, setAcceptEmail] = useState("");
+  const [acceptPhone, setAcceptPhone] = useState("");
+  const [acceptOrg, setAcceptOrg] = useState("");
 
   // Pipeline state
   const [newPipelineOpen, setNewPipelineOpen] = useState(false);
@@ -106,6 +137,23 @@ export default function Settings() {
     [],
   );
 
+  const loadIntake = useMemo(
+    () => async () => {
+      setIntakeLoading(true);
+      try {
+        const [config, leads] = await Promise.all([
+          getIntakeConfig(),
+          listIncomingLeads("pending"),
+        ]);
+        setIntakeConfig(config);
+        setIntakeLeads(leads);
+      } finally {
+        setIntakeLoading(false);
+      }
+    },
+    [],
+  );
+
   useEffect(() => {
     void refresh();
   }, [refresh]);
@@ -113,6 +161,10 @@ export default function Settings() {
   useEffect(() => {
     if (tab === "connections") void loadEmailSync();
   }, [tab, loadEmailSync]);
+
+  useEffect(() => {
+    if (tab === "leads") void loadIntake();
+  }, [tab, loadIntake]);
 
   const submitPipeline = async () => {
     await createPipeline({ name: newPipelineName.trim() });
@@ -160,6 +212,70 @@ export default function Settings() {
     await refresh();
   };
 
+  const saveIntakeConfig = async (patch: {
+    enabled?: boolean;
+    mode?: IntakeMode;
+    poll_interval_minutes?: number;
+  }) => {
+    setIntakeConfig(await updateIntakeConfig(patch));
+  };
+
+  const scanNow = async () => {
+    if (!intakeConfig || !isForgerDesktop()) return;
+    setScanning(true);
+    try {
+      const contacts = await listContacts({ page_size: 200 });
+      const knownEmails = contacts
+        .map((contact) => contact.email)
+        .filter((email): email is string => !!email && email.trim().length > 0);
+      await runScanGmailForLeads({
+        sinceIso: intakeConfig.since_iso,
+        callbackBaseUrl: API_BASE_URL,
+        knownEmails,
+      });
+      await loadIntake();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : "No se pudo escanear Gmail");
+    } finally {
+      setScanning(false);
+    }
+  };
+
+  const openAccept = (lead: IncomingLead) => {
+    setAcceptLead(lead);
+    setAcceptFirst(lead.suggested_first_name ?? "");
+    setAcceptLast(lead.suggested_last_name ?? "");
+    setAcceptEmail(lead.from_email ?? "");
+    setAcceptPhone(lead.suggested_phone ?? "");
+    setAcceptOrg(lead.suggested_org_name ?? "");
+  };
+
+  const submitAccept = async () => {
+    if (!acceptLead) return;
+    try {
+      await acceptIncomingLead(acceptLead.id, {
+        first_name: acceptFirst.trim() || undefined,
+        last_name: acceptLast.trim() || undefined,
+        email: acceptEmail.trim() || undefined,
+        phone: acceptPhone.trim() || undefined,
+        organization_name: acceptOrg.trim() || undefined,
+      });
+      setAcceptLead(null);
+      await loadIntake();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : "No se pudo aceptar el lead");
+    }
+  };
+
+  const handleDismiss = async (id: string) => {
+    try {
+      await dismissIncomingLead(id);
+      await loadIntake();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : "No se pudo descartar");
+    }
+  };
+
   return (
     <Box sx={{ p: 3 }}>
       <Typography variant="h5" fontWeight={700} sx={{ mb: 2 }}>
@@ -172,6 +288,7 @@ export default function Settings() {
           <Tab value="import" label="Importar CSV" />
           <Tab value="history" label="Historial de imports" />
           <Tab value="connections" label="Conexiones" />
+          <Tab value="leads" label="Leads entrantes" />
         </Tabs>
       </Paper>
 
@@ -470,6 +587,223 @@ export default function Settings() {
         </Stack>
       )}
 
+      {tab === "leads" && (
+        <Stack spacing={2}>
+          <Paper variant="outlined" sx={{ p: 2 }}>
+            <Typography variant="subtitle1" fontWeight={700}>
+              Detección de leads desde Gmail
+            </Typography>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+              Mientras CRM OS está abierto, revisa tu Gmail en el intervalo
+              que elijas y detecta correos de posibles clientes nuevos. Cada
+              revisión usa el agente de Forger, así que queda desactivada hasta
+              que tú la actives.
+            </Typography>
+
+            {!isForgerDesktop() && (
+              <Alert severity="info" sx={{ mb: 2 }}>
+                La detección automática solo corre cuando abres CRM OS desde
+                Forger Desktop.
+              </Alert>
+            )}
+
+            {intakeConfig && (
+              <Stack spacing={2}>
+                <FormControlLabel
+                  control={
+                    <Switch
+                      checked={intakeConfig.enabled}
+                      onChange={(event) =>
+                        void saveIntakeConfig({
+                          enabled: event.target.checked,
+                        })
+                      }
+                    />
+                  }
+                  label="Activar detección de leads desde Gmail"
+                />
+                <TextField
+                  select
+                  size="small"
+                  label="Al detectar un lead"
+                  sx={{ maxWidth: 360 }}
+                  value={intakeConfig.mode}
+                  disabled={!intakeConfig.enabled}
+                  onChange={(event) =>
+                    void saveIntakeConfig({
+                      mode: event.target.value as IntakeMode,
+                    })
+                  }
+                >
+                  <MenuItem value="review">
+                    Dejarlo en esta bandeja para revisar
+                  </MenuItem>
+                  <MenuItem value="auto">
+                    Crear el contacto y el deal automáticamente
+                  </MenuItem>
+                </TextField>
+                <TextField
+                  select
+                  size="small"
+                  label="Revisar Gmail cada"
+                  sx={{ maxWidth: 360 }}
+                  value={String(intakeConfig.poll_interval_minutes)}
+                  disabled={!intakeConfig.enabled}
+                  onChange={(event) =>
+                    void saveIntakeConfig({
+                      poll_interval_minutes: Number(event.target.value),
+                    })
+                  }
+                >
+                  <MenuItem value="1">1 minuto</MenuItem>
+                  <MenuItem value="5">5 minutos</MenuItem>
+                  <MenuItem value="10">10 minutos</MenuItem>
+                  <MenuItem value="15">15 minutos</MenuItem>
+                  <MenuItem value="30">30 minutos</MenuItem>
+                  <MenuItem value="60">1 hora</MenuItem>
+                </TextField>
+                <Stack
+                  direction="row"
+                  spacing={4}
+                  sx={{ flexWrap: "wrap", rowGap: 1 }}
+                >
+                  <Box>
+                    <Typography variant="caption" color="text.secondary">
+                      Última revisión
+                    </Typography>
+                    <Typography variant="body1" fontWeight={600}>
+                      {intakeConfig.last_polled_at
+                        ? formatRelative(intakeConfig.last_polled_at)
+                        : "Sin revisiones aún"}
+                    </Typography>
+                  </Box>
+                  <Box>
+                    <Typography variant="caption" color="text.secondary">
+                      Leads por revisar
+                    </Typography>
+                    <Typography variant="body1" fontWeight={600}>
+                      {intakeConfig.pending_count}
+                    </Typography>
+                  </Box>
+                </Stack>
+                <Box>
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    disabled={!isForgerDesktop() || scanning}
+                    onClick={() => void scanNow()}
+                    startIcon={
+                      scanning ? <CircularProgress size={14} /> : undefined
+                    }
+                  >
+                    {scanning ? "Escaneando…" : "Escanear ahora"}
+                  </Button>
+                </Box>
+              </Stack>
+            )}
+          </Paper>
+
+          <Paper variant="outlined">
+            <Stack
+              direction="row"
+              alignItems="center"
+              justifyContent="space-between"
+              sx={{ px: 2, pt: 2 }}
+            >
+              <Typography variant="subtitle1" fontWeight={700}>
+                Leads por revisar
+              </Typography>
+              <Button size="small" onClick={() => void loadIntake()}>
+                Refrescar
+              </Button>
+            </Stack>
+            <Divider sx={{ mt: 1 }} />
+            <Table size="small">
+              <TableHead>
+                <TableRow>
+                  <TableCell>Remitente</TableCell>
+                  <TableCell>Asunto</TableCell>
+                  <TableCell>Por qué es un lead</TableCell>
+                  <TableCell align="right">Confianza</TableCell>
+                  <TableCell>Recibido</TableCell>
+                  <TableCell align="right" />
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {intakeLeads.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={6}>
+                      <Typography variant="body2" color="text.secondary">
+                        {intakeLoading
+                          ? "Cargando…"
+                          : "Sin leads por revisar. Los nuevos aparecerán aquí tras cada revisión de Gmail."}
+                      </Typography>
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  intakeLeads.map((lead) => (
+                    <TableRow key={lead.id}>
+                      <TableCell>
+                        <Typography variant="body2" fontWeight={600}>
+                          {lead.from_name ?? lead.from_email ?? "—"}
+                        </Typography>
+                        {lead.from_name && lead.from_email && (
+                          <Typography
+                            variant="caption"
+                            color="text.secondary"
+                          >
+                            {lead.from_email}
+                          </Typography>
+                        )}
+                      </TableCell>
+                      <TableCell>{lead.subject ?? "—"}</TableCell>
+                      <TableCell>
+                        <Typography variant="body2" color="text.secondary">
+                          {lead.reason ?? "—"}
+                        </Typography>
+                      </TableCell>
+                      <TableCell align="right">
+                        <Chip
+                          size="small"
+                          label={`${Math.round(lead.confidence * 100)}%`}
+                        />
+                      </TableCell>
+                      <TableCell>
+                        {lead.received_at
+                          ? formatRelative(lead.received_at)
+                          : "—"}
+                      </TableCell>
+                      <TableCell align="right">
+                        <Stack
+                          direction="row"
+                          spacing={1}
+                          justifyContent="flex-end"
+                        >
+                          <Button
+                            size="small"
+                            variant="contained"
+                            onClick={() => openAccept(lead)}
+                          >
+                            Aceptar
+                          </Button>
+                          <Button
+                            size="small"
+                            color="inherit"
+                            onClick={() => void handleDismiss(lead.id)}
+                          >
+                            Descartar
+                          </Button>
+                        </Stack>
+                      </TableCell>
+                    </TableRow>
+                  ))
+                )}
+              </TableBody>
+            </Table>
+          </Paper>
+        </Stack>
+      )}
+
       <Dialog
         open={newPipelineOpen}
         onClose={() => setNewPipelineOpen(false)}
@@ -616,6 +950,60 @@ export default function Settings() {
           <Button onClick={() => setNewFieldOpen(false)}>Cancelar</Button>
           <Button variant="contained" onClick={submitCustomField}>
             Crear
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog
+        open={!!acceptLead}
+        onClose={() => setAcceptLead(null)}
+        fullWidth
+        maxWidth="xs"
+      >
+        <DialogTitle>Aceptar lead</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+            Se creará un contacto y un deal en la primera etapa del pipeline
+            por defecto. Revisa los datos antes de confirmar.
+          </Typography>
+          <Stack spacing={2} sx={{ mt: 1 }}>
+            <TextField
+              autoFocus
+              size="small"
+              label="Nombre"
+              value={acceptFirst}
+              onChange={(event) => setAcceptFirst(event.target.value)}
+            />
+            <TextField
+              size="small"
+              label="Apellido"
+              value={acceptLast}
+              onChange={(event) => setAcceptLast(event.target.value)}
+            />
+            <TextField
+              size="small"
+              label="Email"
+              value={acceptEmail}
+              onChange={(event) => setAcceptEmail(event.target.value)}
+            />
+            <TextField
+              size="small"
+              label="Teléfono"
+              value={acceptPhone}
+              onChange={(event) => setAcceptPhone(event.target.value)}
+            />
+            <TextField
+              size="small"
+              label="Empresa"
+              value={acceptOrg}
+              onChange={(event) => setAcceptOrg(event.target.value)}
+            />
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setAcceptLead(null)}>Cancelar</Button>
+          <Button variant="contained" onClick={() => void submitAccept()}>
+            Crear contacto y deal
           </Button>
         </DialogActions>
       </Dialog>

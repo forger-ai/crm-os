@@ -114,6 +114,25 @@ def _migrate_activity_external_columns() -> None:
         conn.commit()
 
 
+def _migrate_intake_config_columns() -> None:
+    """Add `poll_interval_minutes` to an `intakeconfig` table created by an
+    earlier iteration of the lead-intake feature. Idempotent.
+    """
+    if not str(engine.url).startswith("sqlite"):
+        return
+    with engine.connect() as conn:
+        rows = conn.exec_driver_sql("PRAGMA table_info(intakeconfig)").fetchall()
+        if not rows:
+            return  # table not created yet; init_db() will handle it
+        existing = {row[1] for row in rows}
+        if "poll_interval_minutes" not in existing:
+            conn.exec_driver_sql(
+                "ALTER TABLE intakeconfig ADD COLUMN "
+                "poll_interval_minutes INTEGER NOT NULL DEFAULT 5"
+            )
+        conn.commit()
+
+
 def _ensure_activity_external_index() -> None:
     """Create the unique index for (provider, message_id) if missing.
 
@@ -153,6 +172,7 @@ def init_app_db() -> None:
     # against missing columns when SQLModel.metadata.create_all probes the
     # existing schema.
     _migrate_activity_external_columns()
+    _migrate_intake_config_columns()
     init_db()
     _ensure_activity_external_index()
     with Session(engine) as session:

@@ -67,9 +67,9 @@ class OrganizationRead(BaseModel):
     description: str | None
     created_at: datetime
     updated_at: datetime
-    contacts: list["ContactSummary"]
-    open_deals: list["DealSummary"]
-    custom_fields: list["CustomFieldValueRead"]
+    contacts: list[ContactSummary]
+    open_deals: list[DealSummary]
+    custom_fields: list[CustomFieldValueRead]
 
 
 # ── Contacts ────────────────────────────────────────────────────────────────
@@ -102,7 +102,7 @@ class ContactSummary(BaseModel):
     email: str | None
     job_title: str | None
     owner: str | None
-    organizations: list["ContactOrganizationLink"]
+    organizations: list[ContactOrganizationLink]
 
 
 class ContactRead(BaseModel):
@@ -116,9 +116,9 @@ class ContactRead(BaseModel):
     description: str | None
     created_at: datetime
     updated_at: datetime
-    organizations: list["ContactOrganizationLink"]
-    open_deals: list["DealSummary"]
-    custom_fields: list["CustomFieldValueRead"]
+    organizations: list[ContactOrganizationLink]
+    open_deals: list[DealSummary]
+    custom_fields: list[CustomFieldValueRead]
 
 
 class ContactOrganizationLink(BaseModel):
@@ -291,9 +291,9 @@ class DealRead(BaseModel):
     created_at: datetime
     updated_at: datetime
     stage_history: list[DealStageHistoryRead]
-    activities: list["ActivityRead"]
-    notes: list["NoteRead"]
-    custom_fields: list["CustomFieldValueRead"]
+    activities: list[ActivityRead]
+    notes: list[NoteRead]
+    custom_fields: list[CustomFieldValueRead]
 
 
 # ── Activities ──────────────────────────────────────────────────────────────
@@ -700,6 +700,97 @@ class LeadScoreEntry(BaseModel):
 class LeadScoreReport(BaseModel):
     hot: list[LeadScoreEntry]
     cold: list[LeadScoreEntry]
+
+
+# ── Lead intake (Gmail polling) ─────────────────────────────────────────────
+
+IntakeMode = Literal["review", "auto"]
+IncomingLeadStatus = Literal["pending", "accepted", "dismissed"]
+
+
+class IntakeConfigRead(BaseModel):
+    enabled: bool
+    mode: IntakeMode
+    poll_interval_minutes: int
+    last_polled_at: datetime | None
+    since_iso: datetime  # window start the next Gmail poll should use
+    pending_count: int
+
+
+class IntakeConfigUpdate(BaseModel):
+    enabled: bool | None = None
+    mode: IntakeMode | None = None
+    poll_interval_minutes: int | None = Field(default=None, ge=1, le=180)
+
+
+# One lead the agent detected in Gmail. Posted in a batch to /api/intake/scan-result.
+class LeadCandidate(BaseModel):
+    external_message_id: str = Field(min_length=1, max_length=300)
+    external_thread_id: str | None = Field(default=None, max_length=300)
+    from_email: str | None = Field(default=None, max_length=200)
+    from_name: str | None = Field(default=None, max_length=200)
+    subject: str | None = Field(default=None, max_length=300)
+    body: str | None = Field(default=None, max_length=20000)
+    received_at: datetime | None = None
+    confidence: float = Field(default=0.0, ge=0, le=1)
+    reason: str | None = Field(default=None, max_length=600)
+    suggested_first_name: str | None = Field(default=None, max_length=120)
+    suggested_last_name: str | None = Field(default=None, max_length=120)
+    suggested_org_name: str | None = Field(default=None, max_length=200)
+    suggested_phone: str | None = Field(default=None, max_length=80)
+
+    _normalize_received = field_validator("received_at")(
+        lambda cls, v: _to_naive_utc(v)
+    )
+
+
+# Agent callback after one Gmail poll. Idempotent per lead; advances the cursor.
+class ScanResult(BaseModel):
+    polled_at: datetime
+    leads: list[LeadCandidate] = Field(default_factory=list, max_length=200)
+
+    _normalize_polled = field_validator("polled_at")(
+        lambda cls, v: _to_naive_utc(v)
+    )
+
+
+class ScanResultSummary(BaseModel):
+    created: int
+    duplicates: int
+    skipped_known: int
+    promoted: int
+
+
+class IncomingLeadRead(BaseModel):
+    id: str
+    external_provider: str
+    external_message_id: str
+    external_thread_id: str | None
+    from_email: str | None
+    from_name: str | None
+    subject: str | None
+    body: str | None
+    received_at: datetime | None
+    confidence: float
+    reason: str | None
+    suggested_first_name: str | None
+    suggested_last_name: str | None
+    suggested_org_name: str | None
+    suggested_phone: str | None
+    status: IncomingLeadStatus
+    created_contact_id: str | None
+    created_deal_id: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+# Optional edits applied when accepting a pending lead from the review queue.
+class LeadAccept(BaseModel):
+    first_name: str | None = Field(default=None, min_length=1, max_length=120)
+    last_name: str | None = Field(default=None, max_length=120)
+    email: str | None = Field(default=None, max_length=200)
+    phone: str | None = Field(default=None, max_length=80)
+    organization_name: str | None = Field(default=None, max_length=200)
 
 
 # resolve forward references for Pydantic v2
