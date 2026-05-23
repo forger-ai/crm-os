@@ -13,8 +13,11 @@ import PipelineBoard from "./pages/PipelineBoard";
 import ProductsList from "./pages/ProductsList";
 import Reports from "./pages/Reports";
 import Settings from "./pages/Settings";
+import { useLeadPolling } from "./hooks/useLeadPolling";
 
 export default function App() {
+  useLeadPolling();
+
   return (
     <Box
       sx={{

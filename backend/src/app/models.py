@@ -343,3 +343,65 @@ class QuoteNumberSequence(SQLModel, table=True):
     year: int = Field(primary_key=True)
     last_number: int = Field(default=0, ge=0)
     updated_at: datetime = Field(default_factory=utcnow)
+
+
+# ── Lead intake (Gmail polling) ─────────────────────────────────────────────
+
+
+class IntakeConfig(SQLModel, table=True):
+    """Single-row configuration for the Gmail lead polling.
+
+    The frontend polls Gmail every few minutes while the app is open; the
+    backend never reaches Gmail itself. `last_polled_at` is the cursor: the
+    agent only scans messages newer than it.
+    """
+
+    id: str = Field(default="default", primary_key=True)
+    enabled: bool = Field(default=False)  # opt-in: each poll spends Codex tokens
+    mode: str = Field(default="review", max_length=16)  # review | auto
+    poll_interval_minutes: int = Field(default=5, ge=1, le=180)
+    last_polled_at: datetime | None = Field(default=None)
+    created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)
+
+
+class IncomingLead(SQLModel, table=True):
+    """A Gmail message the agent classified as a sales lead.
+
+    Idempotent on (external_provider, external_message_id) so the agent can
+    re-report the same message across overlapping poll windows safely.
+    """
+
+    __table_args__ = (
+        UniqueConstraint(
+            "external_provider",
+            "external_message_id",
+            name="uq_incoming_lead_provider_message",
+        ),
+    )
+
+    id: str = Field(default_factory=new_id, primary_key=True)
+    external_provider: str = Field(default="gmail", index=True, max_length=32)
+    external_message_id: str = Field(max_length=300)
+    external_thread_id: str | None = Field(default=None, max_length=300)
+    from_email: str | None = Field(default=None, index=True, max_length=200)
+    from_name: str | None = Field(default=None, max_length=200)
+    subject: str | None = Field(default=None, max_length=300)
+    body: str | None = Field(default=None, max_length=20000)
+    received_at: datetime | None = Field(default=None, index=True)
+    confidence: float = Field(default=0.0, ge=0, le=1)
+    reason: str | None = Field(default=None, max_length=600)
+    # Lead fields the agent extracted from the email body / signature.
+    suggested_first_name: str | None = Field(default=None, max_length=120)
+    suggested_last_name: str | None = Field(default=None, max_length=120)
+    suggested_org_name: str | None = Field(default=None, max_length=200)
+    suggested_phone: str | None = Field(default=None, max_length=80)
+    status: str = Field(
+        default="pending", index=True, max_length=16
+    )  # pending | accepted | dismissed
+    created_contact_id: str | None = Field(
+        default=None, foreign_key="contact.id"
+    )
+    created_deal_id: str | None = Field(default=None, foreign_key="deal.id")
+    created_at: datetime = Field(default_factory=utcnow, index=True)
+    updated_at: datetime = Field(default_factory=utcnow)

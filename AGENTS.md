@@ -15,7 +15,7 @@ CRM OS supersedes the deprecated `apps/crm-lite/`. Read this file, not the CRM L
 - id: `crm-os`
 - recommended visible name: `CRM OS`
 - type: local-first CRM operating system for small B2B pymes (one to a few sales operators)
-- status: v0.1 — inherits everything CRM Lite v0.2 shipped plus product catalog, quotes with line items, and heuristic lead scoring
+- status: v0.2 — everything from v0.1 (contacts, deals, pipelines, activities, custom fields, CSV import, reports, Gmail sync, product catalog, quotes, heuristic lead scoring) plus automatic lead detection from Gmail
 
 ## Functional Goal
 
@@ -62,6 +62,7 @@ CRM OS does not handle authentication, password storage, multi-user permissions,
 - normalizes datetimes to naive UTC end-to-end
 - consumes Forger Desktop's official Gmail tool to read and send emails. CRM OS never holds Gmail credentials directly: the OAuth refresh token lives in Desktop's secrets store and access tokens are minted on demand by Forger Cloud
 - ingests external emails idempotently via `POST /api/activities/import-external`, deduplicating on (external_provider, external_message_id), and stages outgoing drafts as `Activity` rows with `pending_send=true` until the agent ships them through Gmail
+- detects new sales leads from Gmail: while the app is open the frontend polls at a configurable interval (`IntakeConfig.poll_interval_minutes`, default 5), the `scan_gmail_for_leads` promptTemplate has the agent classify inbound mail, and `POST /api/intake/scan-result` stores each lead — into a review queue or auto-promoted to Organization + Contact + Deal, depending on `IntakeConfig.mode`
 
 ### What It Does Not Do Today
 
@@ -74,13 +75,13 @@ CRM OS does not handle authentication, password storage, multi-user permissions,
 - no products with stock or inventory tracking. Products are catalog rows for quoting only.
 - no recurring billing, subscriptions, or invoicing
 - no web capture forms, multi-user accounts, role-based permissions, or customer portal
-- no background jobs or scheduled reports
+- no backend background jobs or scheduled reports — the Gmail lead polling runs in the frontend and only while the app is open
 
 The agent must not present any of the above as available.
 
 ## User-Visible Capabilities
 
-These nine capabilities map one-to-one with the manifest. They are the only ones the agent can present as real to the final user.
+These ten capabilities map one-to-one with the manifest. They are the only ones the agent can present as real to the final user.
 
 ### 1. Guardar contactos y empresas localmente (`local_crm_data`)
 
@@ -140,6 +141,16 @@ The user can ask:
 
 See `lead-scoring` skill. Score is computed on demand from 5 explainable factors. Read-only by default.
 
+### 10. Detectar leads desde Gmail (`lead_intake`)
+
+While CRM OS is open the frontend polls Gmail by triggering the `scan_gmail_for_leads` promptTemplate. The agent classifies inbound mail from unknown senders and reports leads to `POST /api/intake/scan-result`.
+
+- `IntakeConfig` (single row) controls the feature: `enabled` (opt-in, default off), `mode` (`review` or `auto`), and `poll_interval_minutes` (how often to poll, default 5, range 1–180).
+- The user can also force a one-off scan with the "Escanear ahora" button in the Leads entrantes tab.
+- In `review` mode the lead waits in a queue for the user to confirm; in `auto` mode Organization + Contact + Deal are created immediately.
+- Config and the review queue both live in Ajustes → "Leads entrantes" tab. There is no separate page or menu item.
+- This does NOT replace `crm-email-sync`: that flow still logs emails from already-known contacts as activities. Lead detection only covers unknown senders.
+
 ## Capabilities You Must Not Assume
 
 Do not claim CRM OS supports these unless they were explicitly implemented and committed:
@@ -164,12 +175,12 @@ If the user asks for any of the above, answer honestly and offer to register it 
 
 - `backend/` — FastAPI service
 - `backend/src/app/main.py` — FastAPI app, startup runs `init_app_db`
-- `backend/src/app/models.py` — SQLModel definitions (orgs, contacts, deals, activities, notes, custom fields, field-value registry, import runs, **products, quotes, quote lines, quote number sequence**)
+- `backend/src/app/models.py` — SQLModel definitions (orgs, contacts, deals, activities, notes, custom fields, field-value registry, import runs, products, quotes, quote lines, quote number sequence, **intake config, incoming leads**)
 - `backend/src/app/database_ext.py` — model registration plus default-pipeline, default-currencies seeds, v0.2 activity migration (idempotent)
-- `backend/src/app/routers/` — REST endpoints split by resource (includes `products.py`, `quotes.py`, `lead_scoring.py`)
-- `backend/src/app/services/` — domain logic (`deals` transitions, `field_values` registry, `email_sync`, **`quotes`** for totals/numbering/transitions, **`lead_scoring`** for the heuristic)
+- `backend/src/app/routers/` — REST endpoints split by resource (includes `products.py`, `quotes.py`, `lead_scoring.py`, **`intake.py`**)
+- `backend/src/app/services/` — domain logic (`deals` transitions, `field_values` registry, `email_sync`, `quotes` for totals/numbering/transitions, `lead_scoring` for the heuristic, **`intake`** for Gmail lead detection)
 - `backend/src/app/schemas.py` — Pydantic read/write schemas; datetimes normalized to naive UTC at the boundary
-- `backend/tests/` — pytest end-to-end (30 tests at v0.1)
+- `backend/tests/` — pytest end-to-end (40 tests at v0.2)
 - `frontend/` — Vite + React + MUI shell
 - `frontend/src/api/` — typed wrappers per resource (`products`, `quotes`, `leadScoring`, plus everything inherited)
 - `frontend/src/components/` — reusable UI (Kanban, dialogs, autocomplete, money input, CSV importer, **`ProductFormDialog`, `LineItemEditor`, `QuoteFormDialog`, `LeadScoreBadge`**)
@@ -189,6 +200,12 @@ If the user asks for any of the above, answer honestly and offer to register it 
 - `skills/crm-email-sync/` — Gmail read+send via Forger Desktop
 - `skills/quote-builder/` — armar/editar/transicionar cotizaciones
 - `skills/lead-scoring/` — explicar score y proponer acción
+
+### Prompt Templates
+
+`manifest.json` declares `promptTemplates` that the frontend triggers via `window.forgerApp.startCodexTask`.
+
+- `scan_gmail_for_leads` — runs on a configurable interval while the app is open (frontend `useLeadPolling` hook reads `IntakeConfig.poll_interval_minutes`). Scans Gmail for inbound sales leads from unknown senders and POSTs them to `/api/intake/scan-result`. Backs the `lead_intake` capability.
 
 ### `commons/` Submodule
 
@@ -351,6 +368,7 @@ List only current visible capabilities:
 - mantener un catálogo de productos local
 - armar cotizaciones con productos del catálogo o líneas libres
 - ver qué deals están calientes y por qué (lead scoring)
+- detectar automáticamente leads nuevos desde tu Gmail mientras la app está abierta
 
 ### Question: "armame una cotización para el deal X"
 
